@@ -129,29 +129,13 @@ func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (ima
 		return image.Rectangle{}, ErrInvalidDimensions
 	}
 
+	origin := img.Bounds().Min
+	src := normalizeImage(img)
+
 	// resize image for faster processing
-	scale := math.Min(float64(img.Bounds().Dx())/float64(width), float64(img.Bounds().Dy())/float64(height))
-	var lowimg *image.RGBA
-	var prescalefactor = 1.0
-
-	if prescale {
-		// if f := 1.0 / scale / minScale; f < 1.0 {
-		// prescalefactor = f
-		// }
-		if f := prescaleMin / math.Min(float64(img.Bounds().Dx()), float64(img.Bounds().Dy())); f < 1.0 {
-			prescalefactor = f
-		}
-		o.logger.Log.Println(prescalefactor)
-
-		smallimg := o.Resize(
-			img,
-			uint(float64(img.Bounds().Dx())*prescalefactor),
-			0)
-
-		lowimg = toRGBA(smallimg)
-	} else {
-		lowimg = toRGBA(img)
-	}
+	scale := math.Min(float64(src.Bounds().Dx())/float64(width), float64(src.Bounds().Dy())/float64(height))
+	lowimg, prescalefactor := prepareLowImage(o.Resizer, src)
+	o.logger.Log.Println(prescalefactor)
 
 	if o.logger.DebugMode {
 		_ = writeImage("png", lowimg, "./smartcrop_prescale.png")
@@ -160,19 +144,19 @@ func (o smartcropAnalyzer) FindBestCrop(img image.Image, width, height int) (ima
 	cropWidth, cropHeight := chop(float64(width)*scale*prescalefactor), chop(float64(height)*scale*prescalefactor)
 	realMinScale := math.Min(maxScale, math.Max(1.0/scale, minScale))
 
-	o.logger.Log.Printf("original resolution: %dx%d\n", img.Bounds().Dx(), img.Bounds().Dy())
+	o.logger.Log.Printf("original resolution: %dx%d\n", src.Bounds().Dx(), src.Bounds().Dy())
 	o.logger.Log.Printf("scale: %f, cropw: %f, croph: %f, minscale: %f\n", scale, cropWidth, cropHeight, realMinScale)
 
 	topCrop := analyse(o.logger, lowimg, cropWidth, cropHeight, realMinScale)
 
-	if prescale == true {
+	if prescalefactor != 1.0 {
 		topCrop.Min.X = int(chop(float64(topCrop.Min.X) / prescalefactor))
 		topCrop.Min.Y = int(chop(float64(topCrop.Min.Y) / prescalefactor))
 		topCrop.Max.X = int(chop(float64(topCrop.Max.X) / prescalefactor))
 		topCrop.Max.Y = int(chop(float64(topCrop.Max.Y) / prescalefactor))
 	}
 
-	return topCrop.Canon(), nil
+	return topCrop.Add(origin).Canon(), nil
 }
 
 func (c Crop) totalScore() float64 {
@@ -467,5 +451,24 @@ func toRGBA(img image.Image) *image.RGBA {
 
 	out := image.NewRGBA(img.Bounds())
 	draw.Copy(out, image.Pt(0, 0), img, img.Bounds(), draw.Src, nil)
+	return out
+}
+
+// normalizeImage returns img as an RGBA image with a zero origin. Transparent
+// pixels are composited over an opaque white background, so images with an
+// alpha channel are scored on their visible content instead of uninitialised
+// pixels, and images whose Bounds do not start at the origin are handled
+// without an offset.
+func normalizeImage(img image.Image) *image.RGBA {
+	bounds := img.Bounds()
+	out := image.NewRGBA(image.Rect(0, 0, bounds.Dx(), bounds.Dy()))
+
+	if v, ok := img.(*image.RGBA); ok && v.Bounds() == out.Bounds() && v.Opaque() {
+		return v
+	}
+
+	draw.Draw(out, out.Bounds(), image.White, image.Point{}, draw.Src)
+	draw.Draw(out, out.Bounds(), img, bounds.Min, draw.Over)
+
 	return out
 }

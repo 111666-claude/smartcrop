@@ -64,6 +64,63 @@ func main() {
 
 Also see the test cases in smartcrop_test.go and cli application in cmd/smartcrop/ for further working examples.
 
+## Layout-safe crops (title & price overlays)
+
+`FindBestCropWithLayout` plans a crop together with the placement of one or
+more text boxes (a title, a price, ...). It reuses the regular significance
+score, then jointly penalises detail and skin coverage underneath the boxes so
+faces and busy subjects are not pushed into the copy area:
+
+```go
+analyzer := smartcrop.NewLayoutAnalyzer(nfnt.NewDefaultResizer())
+
+layout, err := analyzer.FindBestCropWithLayout(img, smartcrop.LayoutOptions{
+    Width:  1200, // target aspect ratio and output coordinate space
+    Height: 630,
+    Boxes: []smartcrop.TextBox{
+        {Width: 520, Height: 96},  // title
+        {Width: 260, Height: 64},  // price
+    },
+    Anchors: []smartcrop.Anchor{       // optional, defaults to the 4 corners
+        smartcrop.AnchorBottomRight,
+        smartcrop.AnchorBottomLeft,
+    },
+    Margin: 40, // distance from the crop edge
+    Gap:    24, // distance between boxes
+})
+if err != nil {
+    // ErrInvalidDimensions, ErrUnsupportedAspectRatio, ErrTextDoesNotFit, ...
+}
+
+fmt.Println(layout.Crop)          // rectangle in source image coordinates
+for _, box := range layout.Boxes { // output coordinates, relative to Crop
+    fmt.Println(box.Anchor, box.Rect)
+}
+fmt.Printf("score %.4f (plain best %.4f), text penalty %.4f, fallback %t\n",
+    layout.LayoutScore, layout.BestBaseScore, layout.TextPenalty, layout.Fallback)
+```
+
+Guarantees and failure modes:
+
+* Boxes never overlap each other, never leave the crop, and respect `Margin`
+  and `Gap`; placement happens in the output coordinate space.
+* The subject is preserved: crops retaining less than
+  `MinScoreRetention` (default 50%) of the best plain crop's score are not
+  considered, so the planner never runs off to an empty background.
+* If the image has no sufficiently quiet region, the quietest valid placement
+  is returned with `Fallback == true` instead of failing.
+* Invalid input (zero/negative sizes, unknown anchors, negative margins,
+  aspect ratios beyond 20:1) and impossible geometry return exported errors:
+  `ErrNoTextBoxes`, `ErrInvalidTextBox`, `ErrInvalidAnchor`,
+  `ErrInvalidLayoutOptions`, `ErrUnsupportedAspectRatio`,
+  `ErrCropLargerThanImage`, `ErrTextDoesNotFit`, `ErrNoValidPlacement` and
+  `ErrTooManyCandidates`.
+* Transparent pixels are composited over white. Images whose `Bounds` do not
+  start at the origin are handled correctly, and the returned `Crop` is in the
+  source image's own coordinate space.
+* The candidate budget (`MaxCandidates`, default 2,000,000 crop × placement
+  combinations) bounds work on very large candidate sets.
+
 ## Simple CLI application
 
     go install github.com/muesli/smartcrop/cmd/smartcrop
