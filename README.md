@@ -95,3 +95,47 @@ Got some feedback or suggestions? Please open an issue or drop me a note!
 
 * [Twitter](https://twitter.com/mueslix)
 * [The Fediverse](https://mastodon.social/@fribbledom)
+
+## Continuous frame sequences
+
+`PlanCrops` plans a temporally coherent crop across an ordered video sequence.
+Instead of picking each frame's crop independently (which makes a vertical shot
+jitter back and forth as the subject moves), it analyses every frame's salience
+and then fits a single window trajectory that trades salience against window
+displacement and acceleration.
+
+```go
+frames := []smartcrop.Frame{ // any image.Image; bounds may start anywhere
+	{Image: frame0, Time: 0},
+	{Image: frame1, Time: 330 * time.Millisecond},
+	// ...
+}
+
+crops, err := smartcrop.PlanCrops(frames, smartcrop.SequenceOptions{
+	AspectRatio:        9.0 / 16.0, // required: target crop width / height
+	Smoothness:         4,          // displacement penalty (larger = steadier)
+	AccelerationWeight: 16,         // acceleration penalty (larger = softer starts)
+})
+```
+
+Each returned `image.Rectangle` lies inside its own frame's `Bounds`, keeps the
+requested aspect ratio, and is sized from that frame's dimensions, so frames
+with different resolutions yield crops in their own coordinate systems.
+
+Behaviour details:
+
+* **Slow motion** is followed smoothly; **sudden entrances/exits** are limited
+  by `MaxStep` and `MaxAcceleration` (defaults: half / a quarter of the smaller
+  crop dimension; negative values disable the limit).
+* **Occlusion**: frames whose salience is far below the sequence maximum are
+  treated as unreliable and the window coasts on its motion, so the subject is
+  reacquired when it reappears. Tune with `OcclusionConfidence`.
+* **Errors**: `ErrEmptySequence`, `ErrNonMonotonicTime` (timestamps must not go
+  backwards; equal timestamps mean duplicated frames), `ErrTooManyFrames`,
+  `ErrInvalidSequenceOptions` and `ErrInvalidFrame`.
+* **Memory**: analysis runs on a downscaled copy capped by
+  `MaxAnalysisDimension` (default 320 px, max 1024), and the sequence length is
+  capped by `MaxFrames` (default 1024, hard cap 131072). Only small per-frame
+  statistics are retained between frames.
+* **Determinism**: identical input produces identical output; the trajectory is
+  solved exactly with a banded Cholesky factorisation, not iterative heuristics.
